@@ -4,6 +4,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from aiogram.filters import Command
 import ollama
+from logs import log_user_message, log_bot_answer, log_error
 
 TOKEN = "unknown"
 MODEL_NAME = "unknown"
@@ -75,6 +76,9 @@ SYSTEM_PROMPT_BASE = """
 Лекція: {lecture}
 """
 
+GOODBYE_WORDS = {"Допобачення", "До побачення", "Бувай", "Па", "Па-па", "Пока", "Дякую", "Дякую!", "Все, дякую"}
+
+
 user_subject: Dict[int, str] = {}
 user_style: Dict[int, str] = {}
 user_lecture: Dict[int, str] = {}
@@ -128,6 +132,19 @@ async def cmd_start(message: Message):
         "Привіт! 👩‍💻 Я твій навчальний помічник.\n"
         "Обери предмет, з яким ми будемо працювати:",
         reply_markup=subject_kb()
+    )
+
+@dp.message(Command("stop"))
+async def cmd_stop(message: Message):
+    uid = message.from_user.id
+
+    user_subject.pop(uid, None)
+    user_style.pop(uid, None)
+    user_lecture.pop(uid, None)
+
+    await message.answer(
+        "Розмову завершено.\n"
+        "Щоб почати нову — напиши /start"
     )
 
 @dp.message(Command("status"))
@@ -210,6 +227,16 @@ async def handle_callback(callback: CallbackQuery):
 @dp.message()
 async def on_user_message(message: Message):
     uid = message.from_user.id
+    user_text = (message.text or "").lower().strip()
+
+    if uid not in user_subject and uid not in user_style and uid not in user_lecture:
+        await message.answer("Сесію завершено. Почати нову - /start")
+        return
+
+    if any(word in user_text for word in GOODBYE_WORDS):
+        await message.answer("Дякую за розмову! Якщо потрібна допомога — пиши.")
+        return
+
     if uid not in user_subject:
         await message.answer("Спочатку обери предмет: /start"); return
     if uid not in user_style:
@@ -220,19 +247,49 @@ async def on_user_message(message: Message):
     system_prompt = build_system_prompt(uid)
     user_text = message.text or ""
 
+    await log_user_message(uid, user_text, {
+        "subject": SUBJECT_READABLE.get(user_subject[uid]),
+        "style": user_style[uid],
+        "lecture": user_lecture[uid]
+    })
+
+    typing_task = asyncio.create_task(show_typing(message.chat))
+
     try:
-        await message.chat.do("typing")
         answer = await ollama_chat_async(MODEL_NAME, system_prompt, user_text)
+        typing_task.cancel()
+
+        await log_bot_answer(uid, answer, {
+            "subject": SUBJECT_READABLE.get(user_subject[uid]),
+            "style": user_style[uid],
+            "lecture": user_lecture[uid]
+        })
+
         for i in range(0, len(answer), 3500):
             await message.answer(answer[i:i+3500])
+
     except Exception as e:
+        typing_task.cancel()
         await message.answer(
             "Не вдалось звернутись до локальної моделі.\n"
             "Перевір, що Ollama запущений і модель встановлена.\n"
             "Приклади в терміналі:\n"
             "  ollama list\n  ollama pull gemma3:4b\n  ollama run gemma3:4b \"hello\""
         )
-        print("Ollama error:", e)
+        await log_error(uid, str(e), {
+            "subject": SUBJECT_READABLE.get(user_subject.get(uid)),
+            "style": user_style.get(uid),
+            "lecture": user_lecture.get(uid)
+        })
+
+
+async def show_typing(chat: types.Chat):
+    try:
+        while True:
+            await chat.do("typing")
+            await asyncio.sleep(3)
+    except asyncio.CancelledError:
+        pass
 
 async def main():
     print("Бот запущений")
