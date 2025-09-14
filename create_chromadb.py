@@ -1,6 +1,7 @@
 import chromadb
 from chromadb.config import Settings
 from typing import List, Dict, Optional
+import ollama
 
 CHROMA_PATH = "chroma_db"
 COLLECTION_NAME = "lectures"
@@ -36,8 +37,12 @@ def search_documents(
 ):
     collection = get_chroma_collection()
     where = {"subject": subject} if subject else None
+
+    resp = ollama.embeddings(model="nomic-embed-text", prompt=query)
+    query_embedding = resp["embedding"]
+
     results = collection.query(
-        query_texts=[query],
+        query_embeddings=[query_embedding],
         n_results=n_results,
         where=where
     )
