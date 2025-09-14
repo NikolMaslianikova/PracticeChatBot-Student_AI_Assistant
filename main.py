@@ -2,13 +2,14 @@ import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message
 import ollama
+import os
+from dotenv import load_dotenv
 from logs import log_user_message, log_bot_answer, log_error
-from prompts import SUBJECT_READABLE, SYSTEM_PROMPT_BASE, PRESET_PROMPTS, GOODBYE_WORDS, lectures
+from prompts import SUBJECT_READABLE, SYSTEM_PROMPT_BASE, PRESET_PROMPTS, GOODBYE_WORDS
 from user_data import user_lecture, user_style, user_subject
 from commands import func_commands
 from callbacks import func_callbacks
-from dotenv import load_dotenv
-import os
+from rag import build_rag_prompt
 
 load_dotenv()
 
@@ -66,6 +67,7 @@ async def on_user_message(message: Message):
         await message.answer("Спочатку обери лекцію: /lectures"); return
 
     system_prompt = build_system_prompt(uid)
+    rag_prompt = build_rag_prompt(uid, user_text)
 
     await log_user_message(uid, user_text, {
         "subject": SUBJECT_READABLE.get(user_subject[uid]),
@@ -74,11 +76,10 @@ async def on_user_message(message: Message):
     })
 
     thinking_msg = await message.answer("Думаю над відповіддю...")
-
     typing_task = asyncio.create_task(show_typing(message.chat))
 
     try:
-        answer = await ollama_chat_async(MODEL_NAME, system_prompt, user_text)
+        answer = await ollama_chat_async(MODEL_NAME, system_prompt, rag_prompt)
 
         typing_task.cancel()
 
@@ -88,16 +89,11 @@ async def on_user_message(message: Message):
             "lecture": user_lecture[uid]
         })
 
-        if len(answer) <= 3500:
-            await thinking_msg.edit_text(answer)
-        else:
-            await thinking_msg.edit_text(answer[:3500])
-            for i in range(3500, len(answer), 3500):
-                await message.answer(answer[i:i+3500])
+        for i in range(0, len(answer), 3500):
+            await message.answer(answer[i:i+3500])
 
     except Exception as e:
         typing_task.cancel()
-
         await thinking_msg.edit_text(
             "Не вдалось звернутись до локальної моделі.\n"
             "Перевір, що Ollama запущений і модель встановлена.\n"
@@ -106,7 +102,6 @@ async def on_user_message(message: Message):
             "  ollama pull gemma3:4b\n"
             "  ollama run gemma3:4b \"hello\""
         )
-
         await log_error(uid, str(e), {
             "subject": SUBJECT_READABLE.get(user_subject.get(uid)),
             "style": user_style.get(uid),
